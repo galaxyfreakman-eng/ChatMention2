@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Chat Mention</string>
+    <string name="service_desc">Fügt beim Antippen eines Nicks im YouTube-Live-Chat @nick ins Eingabefeld ein.</string>
+</resources>
