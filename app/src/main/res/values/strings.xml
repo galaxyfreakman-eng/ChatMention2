@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">Chat Mention</string>
-    <string name="service_desc">Fügt beim Antippen eines Nicks im YouTube-Live-Chat @nick ins Eingabefeld ein.</string>
+    <string name="app_name">YLivechat</string>
+    <string name="service_desc">Fügt beim Antippen eines Nicks im YouTube-Live-Chat den Namen mit @ ein. Lässt sich der Dienst nicht einschalten: Erst auf OK tippen, dann Einstellungen, Apps, YLivechat öffnen, oben rechts More antippen und Eingeschränkte Einstellungen zulassen wählen. Danach zurück zu den Bedienungshilfen und den Dienst einschalten.</string>
 </resources>
