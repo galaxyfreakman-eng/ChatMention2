@@ -4,45 +4,37 @@ import android.accessibilityservice.AccessibilityService
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.TextUtils
 import android.util.Log
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import android.view.accessibility.AccessibilityWindowInfo
+import android.widget.TextView
 import android.widget.Toast
+import kotlin.math.abs
 
 class MentionService : AccessibilityService() {
 
     companion object {
         private const val TAG = "ChatMention"
-        private const val PENDING_MS = 60_000L
     }
 
     private val handler = Handler(Looper.getMainLooper())
-    private var pendingNick: String? = null
-    private var pendingTime = 0L
+    private var pendingText: String? = null
+    private var button: TextView? = null
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
-        when (event.eventType) {
-            AccessibilityEvent.TYPE_VIEW_CLICKED -> handleClick(event)
-            AccessibilityEvent.TYPE_VIEW_FOCUSED -> handleFocus(event)
-        }
-    }
-
-    private fun keyboardVisible(): Boolean =
-        windows.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
-
-    private fun handleClick(event: AccessibilityEvent) {
+        if (event == null || event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED) return
         val source = event.source ?: return
-
-        // Antippen des Chat-Feldes selbst: wartenden Nick einfügen
-        if (source.isEditable || source.className?.contains("EditText") == true) {
-            if (pendingNick != null) schedulePaste()
-            return
-        }
+        if (source.isEditable || source.className?.contains("EditText") == true) return
 
         val raw = collectText(source)
         Log.d(TAG, "Klick: raw='$raw' class=${source.className}")
@@ -50,61 +42,165 @@ class MentionService : AccessibilityService() {
         val nick = extractNick(raw) ?: return
         val text = "@$nick "
 
+        // neuer Nick ersetzt den gespeicherten
+        pendingText = text
+        setClip(text)
+        showButton("@$nick")
+        Toast.makeText(this, "Gespeichert: @$nick", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun setClip(text: String) {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("mention", text))
-
-        pendingNick = nick
-        pendingTime = System.currentTimeMillis()
-
-        if (keyboardVisible()) {
-            // Tastatur offen = echtes Feld offen: sofort einfügen
-            Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
-            schedulePaste()
-        } else {
-            // erst warten, bis du das Chat-Feld antippst
-            Toast.makeText(this, "$text bereit - jetzt Chat-Feld antippen", Toast.LENGTH_SHORT).show()
-        }
     }
 
-    private fun handleFocus(event: AccessibilityEvent) {
-        val src = event.source ?: return
-        if (!src.isEditable) return
-        if (pendingNick == null) return
-        schedulePaste()
-    }
+    // ---------- schwebender Knopf ----------
 
-    /** Fügt in drei Versuchen ein und prüft jedes Mal, ob @nick im Feld steht. */
-    private fun schedulePaste() {
-        val nick = pendingNick ?: return
-        if (System.currentTimeMillis() - pendingTime > PENDING_MS) {
-            pendingNick = null
+    private fun showButton(label: String) {
+        val existing = button
+        if (existing != null) {
+            existing.text = label
             return
         }
-        for (delay in longArrayOf(400, 900, 1500)) {
-            handler.postDelayed({
-                val current = pendingNick ?: return@postDelayed
-                val target = rootInActiveWindow
-                    ?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-                    ?.takeIf { it.isEditable } ?: return@postDelayed
-                val existing = if (target.isShowingHintText) "" else target.text?.toString().orEmpty()
-                if (existing.contains("@$current")) {
-                    pendingNick = null
-                    return@postDelayed
+
+        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val dm = resources.displayMetrics
+        val padH = (16 * dm.density).toInt()
+        val padV = (10 * dm.density).toInt()
+
+        val tv = TextView(this).apply {
+            text = label
+            textSize = 16f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            maxWidth = (dm.widthPixels * 0.6).toInt()
+            setPadding(padH, padV, padH, padV)
+            background = GradientDrawable().apply {
+                cornerRadius = 100f
+                setColor(0xE6D32F2F.toInt())
+            }
+            elevation = 12f
+        }
+
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = dm.widthPixels / 2
+            y = dm.heightPixels / 3
+        }
+
+        var downX = 0f
+        var downY = 0f
+        var startX = 0
+        var startY = 0
+        var moved = false
+
+        tv.setOnTouchListener { v, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = e.rawX; downY = e.rawY
+                    startX = lp.x; startY = lp.y
+                    moved = false
+                    true
                 }
-                Log.d(TAG, "Füge @$current ein (Feld: '$existing')")
-                pasteInto(target, existing)
-            }, delay)
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - downX
+                    val dy = e.rawY - downY
+                    if (abs(dx) > 10 || abs(dy) > 10) moved = true
+                    if (moved) {
+                        lp.x = startX + dx.toInt()
+                        lp.y = startY + dy.toInt()
+                        wm.updateViewLayout(v, lp)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!moved) {
+                        if (e.eventTime - e.downTime > 800) {
+                            // langes Drücken: Nick löschen, Knopf weg
+                            pendingText = null
+                            hideButton()
+                            Toast.makeText(this, "Gespeicherter Nick gelöscht", Toast.LENGTH_SHORT).show()
+                        } else {
+                            insertPending()
+                        }
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+
+        try {
+            wm.addView(tv, lp)
+            button = tv
+        } catch (t: Throwable) {
+            Log.d(TAG, "Knopf konnte nicht angezeigt werden: $t")
         }
     }
 
-    private fun pasteInto(target: AccessibilityNodeInfo, existing: String) {
+    private fun hideButton() {
+        val b = button ?: return
+        try {
+            (getSystemService(Context.WINDOW_SERVICE) as WindowManager).removeView(b)
+        } catch (_: Throwable) {}
+        button = null
+    }
+
+    // ---------- Einfügen ins offene Feld ----------
+
+    private fun findFocusedInput(): AccessibilityNodeInfo? {
+        rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?.takeIf { it.isEditable }?.let { return it }
+        for (w in windows) {
+            val f = w.root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            if (f != null && f.isEditable) return f
+        }
+        return null
+    }
+
+    private fun insertPending() {
+        val text = pendingText ?: return
+        val target = findFocusedInput()
+        if (target == null) {
+            Toast.makeText(this, "Kein offenes Eingabefeld - erst Chat-Feld antippen", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val existing = if (target.isShowingHintText) "" else target.text?.toString().orEmpty()
+        val prefix = if (existing.isNotEmpty() && !existing.last().isWhitespace()) " " else ""
+
+        setClip(prefix + text)
         val sel = Bundle().apply {
             putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, existing.length)
             putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, existing.length)
         }
         target.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel)
         target.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+
+        // Prüfen, ob es geklappt hat; sonst Text direkt setzen
+        handler.postDelayed({
+            val now = findFocusedInput()
+            val cur = if (now == null || now.isShowingHintText) "" else now.text?.toString().orEmpty()
+            if (now != null && !cur.contains(text.trim())) {
+                val args = Bundle().apply {
+                    putCharSequence(
+                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                        existing + prefix + text
+                    )
+                }
+                now.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            }
+        }, 400)
     }
+
+    // ---------- Nick erkennen ----------
 
     private fun collectText(node: AccessibilityNodeInfo): String? {
         fun own(n: AccessibilityNodeInfo): String? =
@@ -132,4 +228,9 @@ class MentionService : AccessibilityService() {
     }
 
     override fun onInterrupt() {}
+
+    override fun onDestroy() {
+        hideButton()
+        super.onDestroy()
+    }
 }
