@@ -25,11 +25,18 @@ class MentionService : AccessibilityService() {
 
     companion object {
         private const val TAG = "ChatMention"
+        // true = zeigt bei jedem Klick den erkannten Rohtext (zum Testen)
+        private const val DEBUG_RAW = true
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private var pendingText: String? = null
     private var button: TextView? = null
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        Toast.makeText(this, "Chat Mention aktiv", Toast.LENGTH_LONG).show()
+    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null || event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED) return
@@ -38,6 +45,9 @@ class MentionService : AccessibilityService() {
 
         val raw = collectText(source)
         Log.d(TAG, "Klick: raw='$raw' class=${source.className}")
+        if (DEBUG_RAW) {
+            Toast.makeText(this, "Roh: ${raw?.take(60)}", Toast.LENGTH_SHORT).show()
+        }
         if (raw.isNullOrBlank()) return
         val nick = extractNick(raw) ?: return
         val text = "@$nick "
@@ -46,7 +56,6 @@ class MentionService : AccessibilityService() {
         pendingText = text
         setClip(text)
         showButton("@$nick")
-        Toast.makeText(this, "Gespeichert: @$nick", Toast.LENGTH_SHORT).show()
     }
 
     private fun setClip(text: String) {
@@ -124,7 +133,6 @@ class MentionService : AccessibilityService() {
                 MotionEvent.ACTION_UP -> {
                     if (!moved) {
                         if (e.eventTime - e.downTime > 800) {
-                            // langes Drücken: Nick löschen, Knopf weg
                             pendingText = null
                             hideButton()
                             Toast.makeText(this, "Gespeicherter Nick gelöscht", Toast.LENGTH_SHORT).show()
@@ -143,6 +151,7 @@ class MentionService : AccessibilityService() {
             button = tv
         } catch (t: Throwable) {
             Log.d(TAG, "Knopf konnte nicht angezeigt werden: $t")
+            Toast.makeText(this, "Knopf Fehler: ${t.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -221,9 +230,10 @@ class MentionService : AccessibilityService() {
 
     private fun extractNick(raw: String): String? {
         var s = raw.trim().lineSequence().first().trim()
-        val sep = listOf(": ", ", ", " – ", " - ").map { s.indexOf(it) }.filter { it > 0 }.minOrNull()
+        val seps = listOf(": ", ", ", " – ", " - ", ". ", " • ", " · ")
+        val sep = seps.map { s.indexOf(it) }.filter { it > 0 }.minOrNull()
         s = if (sep != null) s.substring(0, sep) else s.split(" ").first()
-        s = s.removePrefix("@").trim()
+        s = s.removePrefix("@").trim().trimEnd('.', ',', ':', ';', '!', '?', '•', '·')
         return s.takeIf { it.isNotEmpty() && it.length <= 40 }
     }
 
