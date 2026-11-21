@@ -26,8 +26,35 @@ class MentionService : AccessibilityService() {
     companion object {
         private const val TAG = "ChatMention"
         // true = zeigt bei jedem Klick den erkannten Rohtext (zum Testen)
-        private const val DEBUG_RAW = true
+        private const val DEBUG_RAW = false
+        // true = nur das erste Wort als Nick (sprachunabhängig, aber Namen mit Leerzeichen werden gekürzt)
+        private const val FIRST_WORD_ONLY = false
+
+        // Rollen-Wörter, die nicht zum Nick gehören
+        private val BADGE_WORDS = listOf(
+            // Moderator
+            "moderator", "moderatorin", "moderator:in", "modérateur", "modératrice",
+            "moderador", "moderadora", "moderatore", "moderatrice", "moderatör",
+            "модератор", "モデレーター", "관리자",
+            // Besitzer
+            "owner", "besitzer", "inhaber", "eigentümer", "propietario", "propriétaire",
+            "proprietario", "proprietário", "sahibi", "владелец", "właściciel",
+            "所有者", "소유자",
+            // Mitglied
+            "new member", "neues mitglied", "member", "mitglied", "nuevo miembro",
+            "miembro", "nouveau membre", "membre", "novo membro", "nuovo membro",
+            "membro", "üye", "участник", "członek",
+            // Bestätigt / Verifiziert
+            "verified", "verifiziert", "verifizierung", "bestätigung", "bestätigt",
+            "verificado", "verificada", "vérifié", "verificato", "doğrulandı",
+            "подтверждено", "zweryfikowany", "確認済み", "인증됨"
+        )
     }
+
+    private val badgeAlt = BADGE_WORDS.sortedByDescending { it.length }
+        .joinToString("|") { Regex.escape(it) }
+    private val badgeEnd = Regex("[\\s,(\\[•·\\-]+($badgeAlt)[\\s,)\\]]*$", RegexOption.IGNORE_CASE)
+    private val badgeStart = Regex("^[\\s(\\[]*($badgeAlt)[\\s,)\\]:]+", RegexOption.IGNORE_CASE)
 
     private val handler = Handler(Looper.getMainLooper())
     private var pendingText: String? = null
@@ -228,11 +255,25 @@ class MentionService : AccessibilityService() {
         return null
     }
 
+    private fun stripBadges(input: String): String {
+        var s = input.trim()
+        var changed = true
+        while (changed) {
+            changed = false
+            val a = s.replace(badgeEnd, "").trim()
+            val b = a.replace(badgeStart, "").trim()
+            if (b != s) { s = b; changed = true }
+        }
+        return s
+    }
+
     private fun extractNick(raw: String): String? {
         var s = raw.trim().lineSequence().first().trim()
         val seps = listOf(": ", ", ", " – ", " - ", ". ", " • ", " · ")
         val sep = seps.map { s.indexOf(it) }.filter { it > 0 }.minOrNull()
-        s = if (sep != null) s.substring(0, sep) else s.split(" ").first()
+        s = if (sep != null) s.substring(0, sep) else s
+        s = stripBadges(s)
+        if (sep == null || FIRST_WORD_ONLY) s = s.split(" ").first()
         s = s.removePrefix("@").trim().trimEnd('.', ',', ':', ';', '!', '?', '•', '·')
         return s.takeIf { it.isNotEmpty() && it.length <= 40 }
     }
