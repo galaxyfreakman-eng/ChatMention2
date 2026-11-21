@@ -1,8 +1,6 @@
 package com.example.chatmention
 
 import android.accessibilityservice.AccessibilityService
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -56,17 +54,10 @@ class MentionService : AccessibilityService() {
         }
         if (raw.isNullOrBlank()) return
         val nick = extractNick(raw) ?: return
-        val text = "@$nick "
 
-        // neuer Nick ersetzt den gespeicherten
-        pendingText = text
-        setClip(text)
+        // neuer Nick ersetzt den gespeicherten (die Zwischenablage wird nicht angefasst)
+        pendingText = "@$nick "
         showButton("@$nick")
-    }
-
-    private fun setClip(text: String) {
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("mention", text))
     }
 
     // ---------- schwebender Knopf ----------
@@ -169,7 +160,7 @@ class MentionService : AccessibilityService() {
         button = null
     }
 
-    // ---------- Einfügen ins offene Feld ----------
+    // ---------- Einfügen ins offene Feld (ohne Zwischenablage) ----------
 
     private fun findFocusedInput(): AccessibilityNodeInfo? {
         rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
@@ -181,6 +172,24 @@ class MentionService : AccessibilityService() {
         return null
     }
 
+    private fun writeText(node: AccessibilityNodeInfo, text: String) {
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        }
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    private fun setCursorToEnd(node: AccessibilityNodeInfo, length: Int) {
+        val sel = Bundle().apply {
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, length)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, length)
+        }
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel)
+    }
+
+    private fun currentText(node: AccessibilityNodeInfo): String =
+        if (node.isShowingHintText) "" else node.text?.toString().orEmpty()
+
     private fun insertPending() {
         val text = pendingText ?: return
         val target = findFocusedInput()
@@ -188,31 +197,23 @@ class MentionService : AccessibilityService() {
             Toast.makeText(this, "Kein offenes Eingabefeld - erst Chat-Feld antippen", Toast.LENGTH_SHORT).show()
             return
         }
-        val existing = if (target.isShowingHintText) "" else target.text?.toString().orEmpty()
+        val existing = currentText(target)
         val prefix = if (existing.isNotEmpty() && !existing.last().isWhitespace()) " " else ""
+        writeText(target, existing + prefix + text)
 
-        setClip(prefix + text)
-        val sel = Bundle().apply {
-            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, existing.length)
-            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, existing.length)
-        }
-        target.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel)
-        target.performAction(AccessibilityNodeInfo.ACTION_PASTE)
-
-        // Prüfen, ob es geklappt hat; sonst Text direkt setzen
+        // Prüfen; falls der Name fehlt, ein zweiter Versuch
         handler.postDelayed({
-            val now = findFocusedInput()
-            val cur = if (now == null || now.isShowingHintText) "" else now.text?.toString().orEmpty()
-            if (now != null && !cur.contains(text.trim())) {
-                val args = Bundle().apply {
-                    putCharSequence(
-                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                        existing + prefix + text
-                    )
-                }
-                now.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            val now = findFocusedInput() ?: return@postDelayed
+            val cur = currentText(now)
+            if (!cur.contains(text.trim())) {
+                val p = if (cur.isNotEmpty() && !cur.last().isWhitespace()) " " else ""
+                writeText(now, cur + p + text)
             }
-        }, 400)
+            handler.postDelayed({
+                val fin = findFocusedInput() ?: return@postDelayed
+                setCursorToEnd(fin, currentText(fin).length)
+            }, 200)
+        }, 300)
     }
 
     // ---------- Nick erkennen ----------
